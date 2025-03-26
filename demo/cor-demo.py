@@ -37,7 +37,7 @@ for tmp in ctr:
     single_key_freq[word] = float(cnt)
 
 # Step 3: Count the frequency for each word pairs in the text (you should complete this in your second-pass MapReduce).
-for line in lines:
+for line in lines:  # line is a list of words from 1 line
     ctr = Counter(line)
     ctr = sort_dict_by_keys(ctr, False)
     words = [y[0] for y in ctr]

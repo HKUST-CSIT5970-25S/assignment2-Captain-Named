@@ -2,7 +2,7 @@ package hk.ust.csit5970;
 
 import java.io.IOException;
 import java.util.Arrays;
-
+import java.util.Iterator;	// todo
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
@@ -33,7 +33,7 @@ import org.apache.log4j.Logger;
  */
 public class BigramFrequencyPairs extends Configured implements Tool {
 	private static final Logger LOG = Logger.getLogger(BigramFrequencyPairs.class);
-
+	private static FloatWritable MARGINAL = new FloatWritable();	// todo
 	/*
 	 * TODO: write your Mapper here.
 	 */
@@ -53,6 +53,21 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			if (words.length > 1){
+				String previous_word = words[0];
+				for (int i = 1; i < words.length; i++) {
+					String w = words[i];
+					// Skip empty words
+					if (w.length() == 0) {
+						continue;
+					}
+					BIGRAM.set(previous_word, w);
+					context.write(BIGRAM, ONE);
+					BIGRAM.set(previous_word, "");
+					context.write(BIGRAM, ONE);
+					previous_word = w;
+				}
+			}
 		}
 	}
 
@@ -71,6 +86,18 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			Iterator<IntWritable> iter = values.iterator();
+			int sum = 0;
+			while (iter.hasNext()) {
+				sum += iter.next().get();
+			}
+			if (key.getRightElement().equals("")) {
+				MARGINAL.set(sum);
+				context.write(key, MARGINAL);
+			} else{
+				VALUE.set((float)sum / MARGINAL.get());
+				context.write(key, VALUE);
+			}
 		}
 	}
 	
@@ -84,6 +111,13 @@ public class BigramFrequencyPairs extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			Iterator<IntWritable> iter = values.iterator();
+			int sum = 0;
+			while (iter.hasNext()) {
+				sum += iter.next().get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 

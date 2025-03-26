@@ -31,6 +31,7 @@ import java.net.URI;
 import java.util.*;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.StringTokenizer;	// todo
 
 /**
  * Compute the bigram count using "pairs" approach
@@ -43,6 +44,11 @@ public class CORPairs extends Configured implements Tool {
 	 */
 	private static class CORMapper1 extends
 			Mapper<LongWritable, Text, Text, IntWritable> {
+
+		// Reuse objects to save overhead of object creation.
+		private final static IntWritable VALUE = new IntWritable();
+		private final static Text WORD = new Text();
+
 		@Override
 		public void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
@@ -53,6 +59,20 @@ public class CORPairs extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			while (doc_tokenizer.hasMoreTokens()) {
+				String token = doc_tokenizer.nextToken();
+				if (word_set.containsKey(token)) {
+					word_set.put(token, word_set.get(token) + 1);	// inmapper combine
+				} else {
+					word_set.put(token, 1);
+				}
+			}
+
+			for (Map.Entry<String, Integer> entry : word_set.entrySet()) {
+				WORD.set(entry.getKey());
+				VALUE.set(entry.getValue());
+				context.write(WORD, VALUE);
+			}
 		}
 	}
 
@@ -61,11 +81,22 @@ public class CORPairs extends Configured implements Tool {
 	 */
 	private static class CORReducer1 extends
 			Reducer<Text, IntWritable, Text, IntWritable> {
+
+		// Reuse objects.
+		private final static IntWritable SUM = new IntWritable();
+
 		@Override
 		public void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			Iterator<IntWritable> iter = values.iterator();
+			int sum = 0;
+			while (iter.hasNext()) {
+				sum += iter.next().get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 
@@ -74,6 +105,10 @@ public class CORPairs extends Configured implements Tool {
 	 * TODO: Write your second-pass Mapper here.
 	 */
 	public static class CORPairsMapper2 extends Mapper<LongWritable, Text, PairOfStrings, IntWritable> {
+		
+		// Reuse objects to save overhead of object creation.
+		private static final IntWritable ONE = new IntWritable(1);
+
 		@Override
 		protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
 			// Please use this tokenizer! DO NOT implement a tokenizer by yourself!
@@ -81,6 +116,29 @@ public class CORPairs extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			// value is already a line of text?, defaultly implemented by hadoop TextInputFormat
+			Set<String> words = new HashSet<String>();
+    		while (doc_tokenizer.hasMoreTokens()) {
+    		    words.add(doc_tokenizer.nextToken());
+    		}
+			ArrayList<String> wordList = new ArrayList<String>(words);
+			
+			Set<PairOfStrings> pairs = new HashSet<PairOfStrings>();
+    		for (int i = 0; i < wordList.size(); i++) {
+    		    for (int j = i + 1; j < wordList.size(); j++) {
+    		        String word1 = wordList.get(i);
+    		        String word2 = wordList.get(j);
+    		        if (word1.compareTo(word2) <= 0) {
+						pairs.add(new PairOfStrings(word1, word2));
+    		        } else {
+    		            pairs.add(new PairOfStrings(word2, word1));
+    		        }
+    		    }
+    		}
+			
+			for (PairOfStrings pair : pairs) {
+				context.write(pair, ONE);
+			}
 		}
 	}
 
@@ -88,11 +146,21 @@ public class CORPairs extends Configured implements Tool {
 	 * TODO: Write your second-pass Combiner here.
 	 */
 	private static class CORPairsCombiner2 extends Reducer<PairOfStrings, IntWritable, PairOfStrings, IntWritable> {
+		
+		private static final IntWritable SUM = new IntWritable();
+
 		@Override
 		protected void reduce(PairOfStrings key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			Iterator<IntWritable> iter = values.iterator();
+			int sum = 0;
+			while (iter.hasNext()) {
+				sum += iter.next().get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 
@@ -101,6 +169,7 @@ public class CORPairs extends Configured implements Tool {
 	 */
 	public static class CORPairsReducer2 extends Reducer<PairOfStrings, IntWritable, PairOfStrings, DoubleWritable> {
 		private final static Map<String, Integer> word_total_map = new HashMap<String, Integer>();
+		private static final DoubleWritable COR = new DoubleWritable();
 
 		/*
 		 * Preload the middle result file.
@@ -145,6 +214,26 @@ public class CORPairs extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			Iterator<IntWritable> iter = values.iterator();
+			int pairFreq = 0;
+			while (iter.hasNext()) {
+				pairFreq += iter.next().get();
+			}
+
+			String wordA = key.getLeftElement();
+    		String wordB = key.getRightElement();
+
+			int freqA = word_total_map.get(wordA);	// should not be null
+			// if (freqA == null) freqA = 0;
+    		int freqB = word_total_map.get(wordB);	// should not be null
+			// if (freqB == null) freqB = 0;
+
+			double cor = 0.0;
+    		// if (freqA > 0 && freqB > 0) {	// should not be 0
+    		cor = (double) pairFreq / (freqA * freqB);
+    		// }
+			COR.set(cor);
+			context.write(key, COR);
 		}
 	}
 
@@ -257,7 +346,7 @@ public class CORPairs extends Configured implements Tool {
 		job2.setMapOutputValueClass(IntWritable.class);
 		job2.setNumReduceTasks(reduceTasks);
 
-		FileInputFormat.setInputPaths(job2, new Path(inputPath));
+		FileInputFormat.setInputPaths(job2, new Path(inputPath));	// here
 		FileOutputFormat.setOutputPath(job2, new Path(outputPath));
 
 		// Time the program

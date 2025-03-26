@@ -33,6 +33,11 @@ public class CORStripes extends Configured implements Tool {
 	 */
 	private static class CORMapper1 extends
 			Mapper<LongWritable, Text, Text, IntWritable> {
+
+		// Reuse objects to save overhead of object creation.
+		private final static IntWritable VALUE = new IntWritable();
+		private final static Text WORD = new Text();
+
 		@Override
 		public void map(LongWritable key, Text value, Context context)
 				throws IOException, InterruptedException {
@@ -43,6 +48,20 @@ public class CORStripes extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			while (doc_tokenizer.hasMoreTokens()) {
+				String token = doc_tokenizer.nextToken();
+				if (word_set.containsKey(token)) {
+					word_set.put(token, word_set.get(token) + 1);	// inmapper combine
+				} else {
+					word_set.put(token, 1);
+				}
+			}
+
+			for (Map.Entry<String, Integer> entry : word_set.entrySet()) {
+				WORD.set(entry.getKey());
+				VALUE.set(entry.getValue());
+				context.write(WORD, VALUE);
+			}
 		}
 	}
 
@@ -51,11 +70,22 @@ public class CORStripes extends Configured implements Tool {
 	 */
 	private static class CORReducer1 extends
 			Reducer<Text, IntWritable, Text, IntWritable> {
+		
+		// Reuse objects.
+		private final static IntWritable SUM = new IntWritable();
+
 		@Override
 		public void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			Iterator<IntWritable> iter = values.iterator();
+			int sum = 0;
+			while (iter.hasNext()) {
+				sum += iter.next().get();
+			}
+			SUM.set(sum);
+			context.write(key, SUM);
 		}
 	}
 
@@ -63,6 +93,11 @@ public class CORStripes extends Configured implements Tool {
 	 * TODO: Write your second-pass Mapper here.
 	 */
 	public static class CORStripesMapper2 extends Mapper<LongWritable, Text, Text, MapWritable> {
+		
+		// Reuse objects to save overhead of object creation.
+		private static final IntWritable ONE = new IntWritable(1);
+		private final static Text WORD = new Text();
+
 		@Override
 		protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
 			Set<String> sorted_word_set = new TreeSet<String>();
@@ -75,6 +110,24 @@ public class CORStripes extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			while (doc_tokenizers.hasMoreTokens()) {
+				sorted_word_set.add(doc_tokenizers.nextToken());
+			}
+
+			for (String word : sorted_word_set) {
+				MapWritable stripe = new MapWritable();
+				for (String coWord : sorted_word_set) {
+					if (word.compareTo(coWord) < 0) {
+						Text coText = new Text(coWord);
+						stripe.put(coText, ONE);
+					}
+				}
+				
+				if (!stripe.isEmpty()) {
+					WORD.set(word);
+					context.write(WORD, stripe);
+				}
+			}
 		}
 	}
 
@@ -89,6 +142,25 @@ public class CORStripes extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			MapWritable combinedStripe = new MapWritable();	 // for combined stripe
+			for (MapWritable stripe : values) {	// every stripe{co1:2, co2:5, ..., co6:1} of the same word(key)
+				for (Writable coWord : stripe.keySet()) {	// co1, co2, ..., co6
+					IntWritable count = new IntWritable();	// count of (word(key), coWord)
+					count.set(((IntWritable)(stripe.get(coWord))).get());	// stripe.get(coWord) is Writable
+
+					IntWritable updatedCount = new IntWritable();
+					if (combinedStripe.containsKey(coWord)) {
+						updatedCount.set(((IntWritable)(combinedStripe.get(coWord))).get() + count.get());	// combinedStripe.get(coWord): Writable
+					} else {
+						updatedCount.set(count.get());
+					}
+					combinedStripe.put(coWord, updatedCount);	// add if not exist, update if exist
+				}
+			}
+
+			if (!combinedStripe.isEmpty()) {
+				context.write(key, combinedStripe);
+			}
 		}
 	}
 
@@ -98,7 +170,8 @@ public class CORStripes extends Configured implements Tool {
 	public static class CORStripesReducer2 extends Reducer<Text, MapWritable, PairOfStrings, DoubleWritable> {
 		private static Map<String, Integer> word_total_map = new HashMap<String, Integer>();
 		private static IntWritable ZERO = new IntWritable(0);
-
+		private final static DoubleWritable COR = new DoubleWritable();
+		private final static PairOfStrings BIGRAM = new PairOfStrings();
 		/*
 		 * Preload the middle result file.
 		 * In the middle result file, each line contains a word and its frequency Freq(A), seperated by "\t"
@@ -142,6 +215,44 @@ public class CORStripes extends Configured implements Tool {
 			/*
 			 * TODO: Your implementation goes here.
 			 */
+			String word = key.toString();
+			int freqA = word_total_map.get(word);
+
+			// =============================
+			MapWritable combinedStripe = new MapWritable();	 // for combined stripe
+			for (MapWritable stripe : values) {	// every stripe{co1:2, co2:5, ..., co6:1} of the same word(key)
+				for (Writable coWord : stripe.keySet()) {	// co1, co2, ..., co6
+					IntWritable count = new IntWritable();	// count of (word(key), coWord)
+					count.set(((IntWritable)(stripe.get(coWord))).get());	// stripe.get(coWord) is Writable
+
+					IntWritable updatedCount = new IntWritable();
+					if (combinedStripe.containsKey(coWord)) {
+						updatedCount.set(((IntWritable)(combinedStripe.get(coWord))).get() + count.get());	// combinedStripe.get(coWord): Writable
+					} else {
+						updatedCount.set(count.get());
+					}
+					combinedStripe.put(coWord, updatedCount);	// add if not exist, update if exist
+				}
+			}
+			// =============================
+
+			// Calculate correlation for each co-occurring word
+			for (Writable coWordWritable : combinedStripe.keySet()) {	// coWord / word_b
+				Text coWordText = (Text) coWordWritable;
+				String coWord = coWordText.toString();
+				
+				int freqB = word_total_map.get(coWord); // Freq(B)
+				int freqAB = ((IntWritable)(combinedStripe.get(coWordWritable))).get(); // Freq(A,B)
+				
+				// Calculate correlation: Correlation(A,B) = Freq(A,B) / (Freq(A) * Freq(B))
+				double correlation = (double) freqAB / (freqA * freqB);
+				
+				// Create output key-value pair
+				BIGRAM.set(word, coWord);
+				COR.set(correlation);
+				
+				context.write(BIGRAM, COR);
+			}
 		}
 	}
 
